@@ -267,6 +267,7 @@ function ItemModal({ item, onClose, onRequest }) {
 
   return (
     <div
+      className="cb-backdrop"
       style={{
         position: "fixed", inset: 0, background: "rgba(32,38,31,0.45)",
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -275,6 +276,7 @@ function ItemModal({ item, onClose, onRequest }) {
       onClick={onClose}
     >
       <div
+        className="cb-modal"
         onClick={(e) => e.stopPropagation()}
         style={{
           background: C.white, borderRadius: 24, maxWidth: 460, width: "100%",
@@ -434,10 +436,12 @@ function ListItemModal({ onClose, onPublish }) {
 
   return (
     <div
+      className="cb-backdrop"
       style={{ position: "fixed", inset: 0, background: "rgba(32,38,31,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}
       onClick={onClose}
     >
       <div
+        className="cb-modal"
         onClick={(e) => e.stopPropagation()}
         style={{ background: C.white, borderRadius: 24, maxWidth: 480, width: "100%", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(32,38,31,0.25)" }}
       >
@@ -567,6 +571,7 @@ function Navbar({ view, setView, onList }) {
 
         <div className="nav-tabs" style={{ display: "flex", alignItems: "center", gap: 4, background: C.paperDim, padding: 4, borderRadius: 999 }}>
           <button
+            className="cb-seg"
             onClick={() => setView("browse")}
             style={{
               padding: "8px 16px", borderRadius: 999, border: "none", cursor: "pointer",
@@ -579,6 +584,7 @@ function Navbar({ view, setView, onList }) {
             Browse
           </button>
           <button
+            className="cb-seg"
             onClick={() => setView("dashboard")}
             style={{
               padding: "8px 16px", borderRadius: 999, border: "none", cursor: "pointer",
@@ -723,10 +729,12 @@ function EmptyState({ title, subtitle, icon: Icon = Inbox }) {
 function ModalShell({ onClose, children, maxWidth = 440 }) {
   return (
     <div
+      className="cb-backdrop"
       style={{ position: "fixed", inset: 0, background: "rgba(32,38,31,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}
       onClick={onClose}
     >
       <div
+        className="cb-modal"
         onClick={(e) => e.stopPropagation()}
         style={{ background: C.white, borderRadius: 24, maxWidth, width: "100%", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(32,38,31,0.25)", padding: 24, position: "relative" }}
       >
@@ -1012,6 +1020,7 @@ function Dashboard({ myListings, myRequests, setMyRequests, incoming, setIncomin
       <div style={{ display: "flex", gap: 6, background: C.paperDim, padding: 4, borderRadius: 999, width: "fit-content", marginBottom: 28 }}>
         {[{ key: "borrowing", label: "Borrowing" }, { key: "lending", label: "Lending" }].map((t) => (
           <button
+            className="cb-seg"
             key={t.key}
             onClick={() => setTab(t.key)}
             style={{
@@ -1027,6 +1036,7 @@ function Dashboard({ myListings, myRequests, setMyRequests, incoming, setIncomin
         ))}
       </div>
 
+      <div key={tab} className="cb-tab">
       {tab === "borrowing" && (
         myRequests.length === 0 ? (
           <EmptyState title="No requests yet" subtitle="Browse listings and request something you need — it'll show up here." icon={PackageCheck} />
@@ -1139,6 +1149,7 @@ function Dashboard({ myListings, myRequests, setMyRequests, incoming, setIncomin
           </div>
         </div>
       )}
+      </div>
 
       {payReq && (
         <SecurePayModal
@@ -1269,6 +1280,22 @@ export default function App() {
         ::placeholder { color: ${C.inkFaint}; }
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        /* Transitions: short and subtle. Keyframes end on transform: none and
+           use no fill-mode, so nothing lingers afterward. A leftover transform
+           would break the position: fixed modals rendered inside these wrappers. */
+        @keyframes cb-view-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+        @keyframes cb-tab-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        @keyframes cb-fade-in { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes cb-pop-in { from { opacity: 0; transform: translateY(8px) scale(0.97); } to { opacity: 1; transform: none; } }
+        .cb-view { animation: cb-view-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+        .cb-tab { animation: cb-tab-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+        .cb-backdrop { animation: cb-fade-in 200ms ease-out; }
+        .cb-modal { animation: cb-pop-in 240ms cubic-bezier(0.2, 0.9, 0.3, 1.05); }
+        .cb-seg { transition: background 200ms ease, color 200ms ease, box-shadow 200ms ease; }
+        @media (prefers-reduced-motion: reduce) {
+          .cb-view, .cb-tab, .cb-backdrop, .cb-modal { animation: none; }
+          .cb-seg { transition: none; }
+        }
         @media (min-width: 720px) { .hero-deco { display: block !important; } }
         @media (max-width: 560px) { .hide-mobile { display: none; } }
 
@@ -1290,6 +1317,8 @@ export default function App() {
 
       <Navbar view={view} setView={setView} onList={() => setShowListModal(true)} />
 
+      {/* key={view} remounts this wrapper on every switch, replaying the fade-in */}
+      <div key={view} className="cb-view">
       {view === "browse" ? (
         <>
           <Hero
@@ -1323,6 +1352,7 @@ export default function App() {
           pushToast={pushToast}
         />
       )}
+      </div>
 
       {selected && (
         <ItemModal item={selected} onClose={() => setSelected(null)} onRequest={handleRequest} />
