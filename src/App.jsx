@@ -2,7 +2,8 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Search, MapPin, Star, Plus, X, Check, GraduationCap, Laptop, Home,
   Dumbbell, Wrench, Package, ChevronDown, ArrowLeft, Clock, Sparkles,
-  Inbox, PackageCheck, CircleSlash, Calendar,
+  Inbox, PackageCheck, CircleSlash, Calendar, ShieldCheck, Lock, KeyRound,
+  Loader2, Wallet,
 } from "lucide-react";
 
 /* ---------------------------------------------------------------
@@ -88,15 +89,22 @@ const SEED_MY_LISTINGS = [
 ];
 
 const SEED_INCOMING = [
-  { id: "in1", listingId: "m1", listingTitle: "Bluetooth Speaker", requester: "Chloe B.", requesterYear: "'27", days: 2, status: "pending" },
+  { id: "in1", listingId: "m1", listingTitle: "Bluetooth Speaker", requester: "Chloe B.", requesterYear: "'27", days: 2, price: 3, status: "pending", payment: "none", code: null },
 ];
 
 const SEED_MY_REQUESTS = [
-  { id: "r1", listingId: "l5", listingTitle: "Mini Fridge", owner: "Grace T.", days: 4, status: "approved" },
+  { id: "r1", listingId: "l5", listingTitle: "Mini Fridge", owner: "Grace T.", days: 4, price: 5, status: "approved", payment: "none", code: null },
 ];
 
 let idCounter = 100;
 const nextId = (prefix) => `${prefix}${idCounter++}`;
+
+/* Secure handoff helpers: a 6-digit code links the two students.
+   Borrower's payment is held until the lender enters the code at pickup. */
+const makeCode = () => String(Math.floor(100000 + Math.random() * 900000));
+const fmtCode = (code) => `${code.slice(0, 3)} ${code.slice(3)}`;
+const totalOf = (r) => (r.price || 0) * r.days;
+const firstName = (name) => name.split(" ")[0];
 
 /* ---------------------------------------------------------------
    Small building blocks
@@ -710,13 +718,286 @@ function EmptyState({ title, subtitle, icon: Icon = Inbox }) {
 }
 
 /* ---------------------------------------------------------------
+   Secure handoff (escrow) — shared pieces
+--------------------------------------------------------------- */
+function ModalShell({ onClose, children, maxWidth = 440 }) {
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(32,38,31,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: C.white, borderRadius: 24, maxWidth, width: "100%", maxHeight: "88vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(32,38,31,0.25)", padding: 24, position: "relative" }}
+      >
+        <button onClick={onClose} style={{ position: "absolute", top: 20, right: 20, background: C.paperDim, border: "none", borderRadius: 999, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.inkSoft }}>
+          <X size={16} />
+        </button>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function EscrowSteps({ active = 0, lender, borrower }) {
+  const steps = [
+    { icon: Wallet, title: `${borrower} pays`, text: "Money is held safely by CampusBorrow — not sent yet." },
+    { icon: KeyRound, title: "Meet up & share the code", text: `${borrower} shows a 6-digit code to ${lender} at pickup.` },
+    { icon: ShieldCheck, title: `${lender} enters the code`, text: "The code matches, and the money is released instantly." },
+  ];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, background: C.paper, borderRadius: 16, padding: 16 }}>
+      {steps.map((s, i) => {
+        const Icon = s.icon;
+        const done = i < active;
+        const current = i === active;
+        return (
+          <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", opacity: done || current ? 1 : 0.6 }}>
+            <div style={{ width: 30, height: 30, borderRadius: 999, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: done ? C.forest : current ? C.forestSoft : C.white, border: `1px solid ${done || current ? C.forest : C.border}` }}>
+              {done ? <Check size={14} color={C.white} /> : <Icon size={14} color={C.forest} />}
+            </div>
+            <div>
+              <div style={{ fontFamily: "Inter, sans-serif", fontWeight: 600, fontSize: 13.5, color: C.ink }}>{s.title}</div>
+              <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12.5, color: C.inkSoft, lineHeight: 1.45 }}>{s.text}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CodeDisplay({ code }) {
+  return (
+    <div style={{ background: C.forestDeep, borderRadius: 18, padding: "20px 16px", textAlign: "center" }}>
+      <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11.5, fontWeight: 600, letterSpacing: "0.08em", color: "rgba(255,255,255,0.65)", marginBottom: 6 }}>
+        YOUR HANDOFF CODE
+      </div>
+      <div style={{ fontFamily: "Space Grotesk, sans-serif", fontSize: 38, fontWeight: 700, letterSpacing: "0.12em", color: C.white }}>
+        {fmtCode(code)}
+      </div>
+    </div>
+  );
+}
+
+const primaryBtn = {
+  width: "100%", background: C.forest, color: C.white, border: "none", borderRadius: 14,
+  padding: "14px 0", fontFamily: "Space Grotesk, sans-serif", fontSize: 15.5, fontWeight: 600,
+  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+};
+const secondaryBtn = {
+  width: "100%", background: C.paperDim, color: C.ink, border: "none", borderRadius: 14,
+  padding: "12px 0", fontFamily: "Inter, sans-serif", fontSize: 14, fontWeight: 600, cursor: "pointer",
+};
+
+/* Borrower side: pay into escrow, then get the code to show at pickup */
+function SecurePayModal({ request, onClose, onPaid, onSimulateHandoff }) {
+  const total = totalOf(request);
+  const lender = firstName(request.owner);
+  const [step, setStep] = useState(request.payment === "escrow" ? "code" : "review"); // review | paying | code
+  const timer = useRef(null);
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const pay = () => {
+    setStep("paying");
+    timer.current = setTimeout(() => { onPaid(request.id); setStep("code"); }, 1300);
+  };
+
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ width: 48, height: 48, borderRadius: 14, background: C.forestSoft, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+        {step === "code" ? <KeyRound size={22} color={C.forest} /> : <Lock size={22} color={C.forest} />}
+      </div>
+
+      {step !== "code" && (
+        <>
+          <h2 style={{ fontFamily: "Space Grotesk, sans-serif", fontSize: 22, fontWeight: 700, color: C.ink, margin: "0 0 4px" }}>
+            {total > 0 ? "Pay securely" : "Confirm your borrow"}
+          </h2>
+          <p style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: C.inkSoft, margin: "0 0 16px", lineHeight: 1.5 }}>
+            {lender} approved your request for the <strong style={{ color: C.ink }}>{request.listingTitle}</strong>.
+          </p>
+
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 16, padding: "12px 16px", marginBottom: 14, fontFamily: "Inter, sans-serif", fontSize: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", color: C.inkSoft, padding: "4px 0" }}>
+              <span>{total > 0 ? `$${request.price}/day × ${request.days} day${request.days > 1 ? "s" : ""}` : `${request.days} day${request.days > 1 ? "s" : ""}`}</span>
+              <span>{total > 0 ? `$${total}` : "Free"}</span>
+            </div>
+            <div style={{ height: 1, background: C.borderSoft, margin: "6px 0" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", color: C.ink, fontWeight: 700, padding: "4px 0" }}>
+              <span>Total</span>
+              <span>${total}</span>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 18 }}>
+            <EscrowSteps active={0} lender={lender} borrower="You" />
+          </div>
+
+          <button onClick={pay} disabled={step === "paying"} style={{ ...primaryBtn, opacity: step === "paying" ? 0.85 : 1, cursor: step === "paying" ? "default" : "pointer" }}>
+            {step === "paying" ? (
+              <><Loader2 size={17} style={{ animation: "spin 0.9s linear infinite" }} /> Securing payment…</>
+            ) : total > 0 ? (
+              <><Lock size={16} /> Pay ${total} into escrow</>
+            ) : (
+              <><KeyRound size={16} /> Get my handoff code</>
+            )}
+          </button>
+        </>
+      )}
+
+      {step === "code" && (
+        <>
+          <h2 style={{ fontFamily: "Space Grotesk, sans-serif", fontSize: 22, fontWeight: 700, color: C.ink, margin: "0 0 4px" }}>
+            {total > 0 ? `$${total} is held safely` : "You're all set"}
+          </h2>
+          <p style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: C.inkSoft, margin: "0 0 16px", lineHeight: 1.5 }}>
+            Show this code to {lender} when you pick up the {request.listingTitle}.
+            {total > 0 && ` ${lender} only gets paid once they enter it, so keep it private until then.`}
+          </p>
+
+          <CodeDisplay code={request.code} />
+
+          <div style={{ margin: "16px 0 18px" }}>
+            <EscrowSteps active={1} lender={lender} borrower="You" />
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <button onClick={onClose} style={primaryBtn}>Done</button>
+            <button onClick={() => onSimulateHandoff(request.id)} style={secondaryBtn}>
+              Demo: simulate {lender} entering the code
+            </button>
+          </div>
+        </>
+      )}
+    </ModalShell>
+  );
+}
+
+/* Lender side: enter the code the borrower shows you to release the money */
+function VerifyCodeModal({ request, onClose, onVerified }) {
+  const total = totalOf(request);
+  const borrower = firstName(request.requester);
+  const [value, setValue] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = () => {
+    if (value === request.code) onVerified(request.id);
+    else setError("That code doesn't match. Double-check it with " + borrower + ".");
+  };
+
+  return (
+    <ModalShell onClose={onClose}>
+      <div style={{ width: 48, height: 48, borderRadius: 14, background: C.forestSoft, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+        <ShieldCheck size={22} color={C.forest} />
+      </div>
+      <h2 style={{ fontFamily: "Space Grotesk, sans-serif", fontSize: 22, fontWeight: 700, color: C.ink, margin: "0 0 4px" }}>
+        Confirm handoff
+      </h2>
+      <p style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: C.inkSoft, margin: "0 0 16px", lineHeight: 1.5 }}>
+        Ask {borrower} for their 6-digit code when you hand over the {request.listingTitle}.
+        {total > 0 && <> Entering it releases <strong style={{ color: C.ink }}>${total}</strong> to you.</>}
+      </p>
+
+      <input
+        autoFocus
+        inputMode="numeric"
+        maxLength={6}
+        value={value}
+        onChange={(e) => { setValue(e.target.value.replace(/\D/g, "").slice(0, 6)); setError(""); }}
+        onKeyDown={(e) => { if (e.key === "Enter" && value.length === 6) submit(); }}
+        placeholder="••••••"
+        style={{
+          ...inputStyle, textAlign: "center", fontFamily: "Space Grotesk, sans-serif", fontSize: 30,
+          fontWeight: 700, letterSpacing: "0.35em", padding: "14px 0 14px 0.35em",
+          borderColor: error ? C.brick : C.border,
+        }}
+      />
+      <div style={{ minHeight: 22, marginTop: 6, fontFamily: "Inter, sans-serif", fontSize: 13, color: C.brick }}>
+        {error}
+      </div>
+
+      <div style={{ background: C.goldSoft, color: "#8A6416", borderRadius: 12, padding: "9px 12px", fontFamily: "Inter, sans-serif", fontSize: 12.5, marginBottom: 16 }}>
+        Demo: {borrower}'s code is <strong>{fmtCode(request.code)}</strong>
+      </div>
+
+      <button
+        onClick={submit}
+        disabled={value.length !== 6}
+        style={{ ...primaryBtn, background: value.length === 6 ? C.forest : C.paperDim, color: value.length === 6 ? C.white : C.inkFaint, cursor: value.length === 6 ? "pointer" : "not-allowed" }}
+      >
+        <ShieldCheck size={16} /> {total > 0 ? `Verify & release $${total}` : "Verify handoff"}
+      </button>
+    </ModalShell>
+  );
+}
+
+function EscrowBadge({ r, side }) {
+  const total = totalOf(r);
+  if (r.payment === "released") {
+    const who = side === "borrow" ? `paid to ${firstName(r.owner)}` : "received";
+    return <Badge tone="green"><ShieldCheck size={12} /> Complete{total > 0 ? ` · $${total} ${who}` : ""}</Badge>;
+  }
+  if (r.payment === "escrow") {
+    return <Badge tone="amber"><Lock size={12} /> {total > 0 ? `$${total} held in escrow` : "Awaiting handoff"}</Badge>;
+  }
+  return null;
+}
+
+const smallBtn = (primary) => ({
+  padding: "8px 14px", borderRadius: 10, border: primary ? "none" : `1px solid ${C.border}`,
+  background: primary ? C.forest : C.white, color: primary ? C.white : C.inkSoft,
+  fontFamily: "Inter, sans-serif", fontWeight: 600, fontSize: 13.5, cursor: "pointer",
+  display: "inline-flex", alignItems: "center", gap: 6,
+});
+
+/* ---------------------------------------------------------------
    Dashboard
 --------------------------------------------------------------- */
-function Dashboard({ myListings, myRequests, incoming, setIncoming }) {
+function Dashboard({ myListings, myRequests, setMyRequests, incoming, setIncoming, pushToast }) {
   const [tab, setTab] = useState("borrowing");
+  const [payId, setPayId] = useState(null);
+  const [verifyId, setVerifyId] = useState(null);
+  const payReq = myRequests.find((r) => r.id === payId);
+  const verifyReq = incoming.find((r) => r.id === verifyId);
+
+  const updateReq = (id, patch) => setMyRequests((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const updateIncoming = (id, patch) => setIncoming((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
 
   const respond = (id, status) => {
-    setIncoming((prev) => prev.map((r) => (r.id === id ? { ...r, status } : r)));
+    if (status === "approved") {
+      // In the demo, the borrower pays right away so the lender can see the escrow step.
+      const r = incoming.find((x) => x.id === id);
+      updateIncoming(id, { status, payment: "escrow", code: makeCode() });
+      const total = totalOf(r);
+      pushToast(total > 0
+        ? `Approved! ${firstName(r.requester)} paid $${total}, held safely until pickup.`
+        : `Approved! ${firstName(r.requester)} will share a handoff code at pickup.`);
+    } else {
+      updateIncoming(id, { status });
+    }
+  };
+
+  const handlePaid = (id) => {
+    const r = myRequests.find((x) => x.id === id);
+    updateReq(id, { payment: "escrow", code: makeCode() });
+    if (totalOf(r) > 0) pushToast(`$${totalOf(r)} is held securely until pickup`);
+  };
+
+  const handleBorrowHandoff = (id) => {
+    const r = myRequests.find((x) => x.id === id);
+    updateReq(id, { payment: "released" });
+    setPayId(null);
+    pushToast(totalOf(r) > 0
+      ? `Code verified. $${totalOf(r)} released to ${firstName(r.owner)}.`
+      : `Handoff confirmed with ${firstName(r.owner)}.`);
+  };
+
+  const handleVerified = (id) => {
+    const r = incoming.find((x) => x.id === id);
+    updateIncoming(id, { payment: "released" });
+    setVerifyId(null);
+    pushToast(totalOf(r) > 0 ? `Code verified. $${totalOf(r)} sent to your account.` : "Handoff confirmed!");
   };
 
   return (
@@ -756,10 +1037,28 @@ function Dashboard({ myListings, myRequests, incoming, setIncoming }) {
                 <div>
                   <div style={{ fontFamily: "Space Grotesk, sans-serif", fontWeight: 600, fontSize: 15.5, color: C.ink }}>{r.listingTitle}</div>
                   <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13.5, color: C.inkSoft, marginTop: 2 }}>
-                    From {r.owner} · {r.days} day{r.days > 1 ? "s" : ""}
+                    From {r.owner} · {r.days} day{r.days > 1 ? "s" : ""}{totalOf(r) > 0 ? ` · $${totalOf(r)}` : " · Free"}
                   </div>
                 </div>
-                <StatusBadge status={r.status} />
+                {r.status === "approved" && r.payment === "none" ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <StatusBadge status={r.status} />
+                    <button onClick={() => setPayId(r.id)} style={smallBtn(true)}>
+                      <Lock size={14} /> {totalOf(r) > 0 ? `Pay $${totalOf(r)} securely` : "Get handoff code"}
+                    </button>
+                  </div>
+                ) : r.payment === "escrow" ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <EscrowBadge r={r} side="borrow" />
+                    <button onClick={() => setPayId(r.id)} style={smallBtn(false)}>
+                      <KeyRound size={14} /> View code
+                    </button>
+                  </div>
+                ) : r.payment === "released" ? (
+                  <EscrowBadge r={r} side="borrow" />
+                ) : (
+                  <StatusBadge status={r.status} />
+                )}
               </div>
             ))}
           </div>
@@ -781,10 +1080,19 @@ function Dashboard({ myListings, myRequests, incoming, setIncoming }) {
                     <div>
                       <div style={{ fontFamily: "Space Grotesk, sans-serif", fontWeight: 600, fontSize: 15.5, color: C.ink }}>{r.listingTitle}</div>
                       <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13.5, color: C.inkSoft, marginTop: 2 }}>
-                        {r.requester} {r.requesterYear} wants it for {r.days} day{r.days > 1 ? "s" : ""}
+                        {r.requester} {r.requesterYear} wants it for {r.days} day{r.days > 1 ? "s" : ""}{totalOf(r) > 0 ? ` · $${totalOf(r)}` : ""}
                       </div>
                     </div>
-                    {r.status === "pending" ? (
+                    {r.payment === "escrow" ? (
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <EscrowBadge r={r} side="lend" />
+                        <button onClick={() => setVerifyId(r.id)} style={smallBtn(true)}>
+                          <KeyRound size={14} /> Enter handoff code
+                        </button>
+                      </div>
+                    ) : r.payment === "released" ? (
+                      <EscrowBadge r={r} side="lend" />
+                    ) : r.status === "pending" ? (
                       <div style={{ display: "flex", gap: 8 }}>
                         <button onClick={() => respond(r.id, "declined")} style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${C.border}`, background: C.white, color: C.inkSoft, fontFamily: "Inter, sans-serif", fontWeight: 600, fontSize: 13.5, cursor: "pointer" }}>
                           Decline
@@ -830,6 +1138,24 @@ function Dashboard({ myListings, myRequests, incoming, setIncoming }) {
             )}
           </div>
         </div>
+      )}
+
+      {payReq && (
+        <SecurePayModal
+          key={payReq.id}
+          request={payReq}
+          onClose={() => setPayId(null)}
+          onPaid={handlePaid}
+          onSimulateHandoff={handleBorrowHandoff}
+        />
+      )}
+      {verifyReq && (
+        <VerifyCodeModal
+          key={verifyReq.id}
+          request={verifyReq}
+          onClose={() => setVerifyId(null)}
+          onVerified={handleVerified}
+        />
       )}
     </div>
   );
@@ -897,11 +1223,17 @@ export default function App() {
   }, [listings, query, category, location, availability]);
 
   const handleRequest = (item, days, startDate) => {
+    const id = nextId("r");
     setMyRequests((prev) => [
-      { id: nextId("r"), listingId: item.id, listingTitle: item.title, owner: item.owner, days, status: "pending" },
+      { id, listingId: item.id, listingTitle: item.title, owner: item.owner, days, price: item.price, status: "pending", payment: "none", code: null },
       ...prev,
     ]);
     pushToast(`Request sent to ${item.owner} for the ${item.title}`);
+    // Demo: the lender "approves" a few seconds later so the secure-payment step can be shown live.
+    setTimeout(() => {
+      setMyRequests((prev) => prev.map((r) => (r.id === id && r.status === "pending" ? { ...r, status: "approved" } : r)));
+      pushToast(`${firstName(item.owner)} approved! Open your dashboard to ${item.price > 0 ? "pay securely" : "get your handoff code"}.`);
+    }, 4000);
   };
 
   const handlePublish = (data) => {
@@ -935,6 +1267,7 @@ export default function App() {
         img, svg { max-width: 100%; }
         input:focus, select:focus, textarea:focus { border-color: ${C.forest} !important; }
         ::placeholder { color: ${C.inkFaint}; }
+        @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         @media (min-width: 720px) { .hero-deco { display: block !important; } }
         @media (max-width: 560px) { .hide-mobile { display: none; } }
@@ -983,7 +1316,12 @@ export default function App() {
           </div>
         </>
       ) : (
-        <Dashboard myListings={myListings} myRequests={myRequests} incoming={incoming} setIncoming={setIncoming} />
+        <Dashboard
+          myListings={myListings}
+          myRequests={myRequests} setMyRequests={setMyRequests}
+          incoming={incoming} setIncoming={setIncoming}
+          pushToast={pushToast}
+        />
       )}
 
       {selected && (
